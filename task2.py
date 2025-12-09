@@ -8,23 +8,20 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-# =========================================================
-#   FT-ish styling: colours, fonts, backgrounds
-# =========================================================
 
-paper_bg = "#f2e6d8"      # warm FT paper
-plot_bg = "#f2e6d8"       # same as paper for seamless look
-grid_col = "#e3d5c6"      # very soft grid
-axis_col = "#b0977b"      # axis line colour
-tick_col = "#6b5a4b"      # text colour
+
+paper_bg = "#f2e6d8"     
+plot_bg = "#f2e6d8"       
+grid_col = "#e3d5c6"      
+axis_col = "#b0977b"      
+tick_col = "#6b5a4b"      
 
 ft_green = "#7bb274"      # muted soft green
 ft_red = "#c6665c"        # muted salmon red
 
-
-# =========================================================
-#   Fetch helpers
-# =========================================================
+# Light tints for row highlighting in the table
+ft_green_light = "#e3f2e1"
+ft_red_light   = "#f8dad5"
 
 def fetch_wind_solar_forecast(date, query_attempt_count=5):
     """
@@ -482,11 +479,25 @@ def plot_forecast_vs_actual_with_table(df, fuel_label="Wind", x_axis="settlement
     )
 
     # Table – same ordering as df
+        # Table – same ordering as df
     table_df = df[["settlementPeriod", "forecast_MW", "actual_MW", "diff_MW"]].copy()
 
     table_df["forecast_MW"] = table_df["forecast_MW"].round(1)
     table_df["actual_MW"] = table_df["actual_MW"].round(1)
     table_df["diff_MW"] = table_df["diff_MW"].round(1)
+
+    # Row-wise colours based on forecast error (Actual - Forecast)
+    row_colors = []
+    for v in table_df["diff_MW"]:
+        try:
+            if pd.isna(v):
+                row_colors.append(plot_bg)
+            elif v >= 0:
+                row_colors.append(ft_green_light)
+            else:
+                row_colors.append(ft_red_light)
+        except Exception:
+            row_colors.append(plot_bg)
 
     fig.add_trace(
         go.Table(
@@ -504,7 +515,8 @@ def plot_forecast_vs_actual_with_table(df, fuel_label="Wind", x_axis="settlement
                     table_df["diff_MW"],
                 ],
                 align="center",
-                fill_color=plot_bg,
+                # same row colour applied to each column
+                fill_color=[row_colors, row_colors, row_colors, row_colors],
                 font=dict(color=tick_col),
             ),
             columnwidth=[0.8, 1.4, 1.4, 1.6],
@@ -512,19 +524,33 @@ def plot_forecast_vs_actual_with_table(df, fuel_label="Wind", x_axis="settlement
         row=2, col=1,
     )
 
+    os.makedirs(output_dir, exist_ok=True)
     base = f"forecast_vs_actual_{fuel_label.lower()}_{date_str.replace(' ', '_')}"
     base = os.path.join(output_dir, base)
-    # Save PNG + HTML
+
     try:
-        fig.write_image(base + ".png")
+        fig_png = go.Figure(fig)  
+
+        n_rows = len(table_df)
+        cell_height = 20    
+        header_height = 24  
+        table_fraction = 0.35 
+
+        needed_table_px = header_height + n_rows * cell_height
+        fig_height = int(needed_table_px / table_fraction) + 200 
+
+        fig_png.update_layout(width=1600, height=fig_height)
+        fig_png.write_image(base + ".png", scale=2)
         print(f"Saved PNG:  {base}.png")
     except Exception as e:
         print(f"FAILED TO SAVE PNG IMAGE ({base}.png): {e}")
 
+    
     fig.write_html(base + ".html", include_plotlyjs="cdn")
     print(f"Saved HTML: {base}.html")
 
     fig.show()
+
 
 
 def print_forecast_error_summary(df, fuel_label="Wind"):
@@ -662,6 +688,7 @@ def main():
         date=args.date,
         do_plots=args.do_plots,
         x_axis=args.x_axis,
+        output_dir=args.output_dir,
     )
 
 

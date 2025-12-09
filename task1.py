@@ -206,6 +206,7 @@ def plot(df, order_str, output_dir="."):
     except Exception as e:
         print(f"FAILED TO SAVE PNG IMAGE ({base}.png): {e}")
 
+    fig.write_image(base + ".png", width=1600, height=900, scale=2)
     fig.write_html(base + ".html", include_plotlyjs="cdn")
     print(f"Saved HTML: {base}.html")
 
@@ -439,6 +440,7 @@ def plot_diff(prev_df, new_df, order_str, title_suffix="", output_dir ="."):
     except Exception as e:
         print(f"FAILED TO SAVE PNG IMAGE ({base}.png): {e}")
 
+    fig.write_image(base + ".png", width=1600, height=900, scale=2)
     fig.write_html(base + ".html", include_plotlyjs="cdn")
     print(f"Saved HTML: {base}.html")
 
