@@ -11,3 +11,6 @@ __pycache__/
 task_o_t_output.csv
 EOT
 explanation.txt
+to_send/*
+/to_send
+to_send.zip
