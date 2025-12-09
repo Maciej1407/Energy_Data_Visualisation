@@ -8,7 +8,6 @@ __pycache__/
 *.png
 *.html
 *.csv
-task1_plots/
 task_o_t_output.csv
 EOT
 explanation.txt
