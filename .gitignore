@@ -1,0 +1,13 @@
+
+# Ignore virtual environment
+mvenv/
+__pycache__/
+.DS_Store
+
+# Ignore generated outputs
+*.png
+*.html
+*.csv
+task1_plots/
+task_o_t_output.csv
+EOT
