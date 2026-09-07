@@ -1,625 +1,249 @@
-
 # BMRS Analysis – Task 1 & Task 2
 
-This repository contains two scripts:
+Fetch, normalise, and plot GB electricity market data from the Elexon BMRS
+Insights API.
 
-- **Task 1** (`task1.py`): day-ahead *indicated imbalance* and its evolution.
+- **Task 1** (`task1.py`): day-ahead *indicated imbalance* and how the forecast evolves.
 - **Task 2** (`task2.py`): *wind and solar* generation – forecast vs actuals for a local (CE(S)T) day.
 
-Both scripts are designed to be usable from a Jupyter notebook or from the command line.
-
+Both scripts still work exactly as they did. The logic behind them now lives in
+the `energyviz` package, so it can also be driven from a notebook, extended to a
+second data source, or written out as Parquet.
 
 ---
-Quick Usage:
-(optional parameters, only necessary paramter is `--date`)
+
+## Quick usage
+
+The only required parameter is `--date`.
+
 ```bash
 python task1.py --date 2025-12-07 -o out_task1
 ```
-- `-o` is output directory for the plots. The default is to save in the current working directory of the script
-- for quick look at the most up-to date data you may run the script with --no-auto-update 
-Note: If ran on a day which is not the current date the code will no longer update as it is written per the task to extract data for a single date. 
 
 ```bash
-python task2.py --date 2025-11-11 --x-axis startTime_cest -o out_task2
-```
-- Default value for x axis for this task is settlement period, changing the x-axis is optional. 
-- `-o` is also the directory within which to save the plots
-
-## Task 1 – Indicated Imbalance (Day-Ahead)
-
-### 1. Data handling and processing
-
-**Goal:** for a given **UTC settlement date** `D`, build a clean local (Europe/Berlin) view of the *indicated imbalance* forecast, with exactly one value per settlement period, and then track how that forecast evolves over time.
-
-#### 1.1 Local day logic (SP 47–48 + 1–46)
-
-For a chosen `date` (interpreted as settlementDate `D` in UTC):
-
-- Compute `D-1` (previous settlementDate).
-- Query settlement periods as:
-
-  - **SP 47–48 from `D-1`**
-  - **SP 1–46 from `D`**
-
-This corresponds to a single **local day** in CEST countries once we convert timestamps from UTC to CE(S)T.
-
-The function:
-
-```python
-fetch_data(date, query_attempt_count=5)
-````
-
-* Calls
-  `https://data.elexon.co.uk/bmrs/api/v1/forecast/indicated/day-ahead/evolution`
-* Uses two requests with parameters:
-
-  * `settlementDate = D-1, settlementPeriod = [47, 48]`
-  * `settlementDate = D,   settlementPeriod = [1..46]`
-* Wraps the HTTP calls in a small retry loop controlled by `query_attempt_count` (default 5) with a short delay between requests, this is to account for the rate-limits imposed by most public api's
-
-#### 1.2 Response → DataFrame
-
-```python
-req_to_df(r1, r2)
+python task2.py --date 2025-11-11 --x-axis start_local -o out_task2
 ```
 
-* Converts `r1.json()["data"]` and `r2.json()["data"]` into two DataFrames.
-* Concatenates them into `full_df`, which holds all records for the local day.
-
-#### 1.3 Time conversion (UTC → CEST)
-
-```python
-convert_col_to_cest(df, col_names=["startTime", "publishTime"])
-```
-
-* For each column in `col_names`, adds a corresponding `*_cest` column, we add new columns instead of replacing original columns to preserve data and spot errors:
-
-  ```python
-  df[f"{col}_cest"] = pd.to_datetime(df[col], utc=True).dt.tz_convert("Europe/Berlin")
-  ```
-
-* This keeps the original UTC timestamps and adds CE(S)T timestamps for plotting and titles.
-
-#### 1.4 One forecast per SP (latest publish)
-
-The BMRS endpoint returns multiple rows per `(settlementDate, settlementPeriod)` because the forecast is republished over time.
-
-````python
-drop_na_get_final(df)
-``>
-
-- Drops rows where `indicatedImbalance` is `NaN`.
-- Sorts by `publishTime_cest`.
-- Uses:
-
-  ```python
-  df_valid.groupby(["settlementDate", "settlementPeriod"]).tail(1)
-````
-
-to keep the **latest** published version per settlement period.
-
-You end up with exactly one `indicatedImbalance` per SP for the local day.
-
-#### 1.5 Settlement period ordering
-
-Local day ordering:
-
-```text
-47, 48, 1, 2, ..., 46
-```
-
-```python
-create_custom_ordering(final_df)
-```
-
-* Casts `settlementPeriod` to `int`.
-* Adds `settlementPeriod_str` (string) for categorical x-axis.
-* Returns both the modified `final_df` and `order_str` (list of SPs as strings in `[47, 48, 1..46]` order).
-
-#### 1.6 Sign of imbalance
-
-```python
-imbalance_sign(df, col="indicatedImbalance")
-```
-
-* Adds `indicatedImbalance_sign` with:
-
-  * `"Positive"` if `indicatedImbalance >= 0`
-  * `"Negative"` otherwise.
-
-### 2. Visualisation – single snapshot
-
-**Function:**
-
-```python
-plot(df, order_str, output_dir=".")
-```
-
-**Core idea:**
-
-* Show the **shape of the imbalance profile across the day**, while still making positive vs negative periods visually obvious.
-
-**Implementation:**
-
-* Uses `plotly.express.scatter` with:
-
-  * `x = "settlementPeriod_str"`
-  * `y = "indicatedImbalance"`
-  * `color = "indicatedImbalance_sign"` (Positive/Negative)
-  * `category_orders={"settlementPeriod_str": order_str}`
-    to enforce the `[47, 48, 1..46]` ordering on the x-axis.
-
-* On top of the scatter, the code can be configured (in the file) to add a line trace for visual continuity across settlement periods. The important point is that **all dots for a given SP appear at the same x-position**, and the x-axis always respects the 47–48–1..46 order.
-
-* Title is built from:
-
-  * the **max `publishTime_cest`** – to indicate how recent the forecast is, and
-  * the **settlement date** – in `"%d %b %Y"` format.
-
-**Styling:**
-
-* The styling is **FT-inspired by default**:
-
-  * Warm paper background (`paper_bg`, `plot_bg`).
-  * Muted FT-style greens/reds (`ft_green`, `ft_red`).
-  * Soft grid lines (`grid_col`) and a serif font.
-
-**Saving:**
-
-Plots are saved under `output_dir` as:
-
-* `part1_imbalance_<YYYY-MM-DD>.png` – static image via `kaleido`.
-* `part1_imbalance_<YYYY-MM-DD>.html` – interactive Plotly figure.
-
-> **Note:** PNG export requires `kaleido`. Install via:
->
-> ```bash
-> pip install -U kaleido
-> ```
-
-### 3. Visualisation – forecast evolution (plot_diff)
-
-**Function:**
-
-```python
-plot_diff(prev_df, new_df, order_str, title_suffix="", output_dir=".")
-```
-
-**Goal:** Visualise how the forecast changed between two snapshots:
-
-* `prev_df` – earlier snapshot (previous update),
-* `new_df` – later snapshot (latest update).
-
-The function is also used by the auto-update loop.
-
-#### 3.1 Merging logic
-
-Because forecasts can be compared:
-
-* within the **same settlement date**, or
-* across **different settlement dates** (e.g. crossing midnight),
-
-the function handles both cases.
-
-Steps:
-
-1. Rename `indicatedImbalance` columns to:
-
-   * `indicatedImbalance_prev`
-   * `indicatedImbalance_new`
-
-2. Determine merge keys:
-
-   * If both snapshots share a single identical `settlementDate`, merge on:
-
-     ```python
-     merge_on = ["settlementDate", "settlementPeriod"]
-     ```
-
-     and set `is_same_date = True`.
-
-   * Otherwise, merge on:
-
-     ```python
-     merge_on = ["settlementPeriod"]
-     ```
-
-     and set `is_same_date = False`.
-
-3. After merging:
-
-   * Compute `delta = indicatedImbalance_new - indicatedImbalance_prev`.
-   * Derive `sign_prev` and `sign_new` columns (Positive/Negative).
-   * Keep `settlementPeriod_str` and use `order_str` to enforce the desired x-ordering.
-
-#### 3.2 Plot elements
-
-The design is consistent with the testing helper (`test_plot_diff_different_dates`):
-
-* **Previous forecast:**
-
-  * Two marker traces:
-
-    * Light green for previous positive values.
-    * Light red for previous negative values.
-  * Small markers, semi-transparent.
-
-* **Latest forecast:**
-
-  * Two marker traces:
-
-    * Bold green for latest positive values.
-    * Bold red for latest negative values.
-  * Larger markers with a thin darker outline.
-
-* **Vertical dotted lines per SP:**
-
-  * For settlement periods where both previous and latest values exist:
-
-    * Draw a vertical line from `previous` to `latest`.
-    * Colour:
-
-      * Green if `delta > 0` (imbalance increased).
-      * Red otherwise.
-    * Style: `dash="dot"` with moderate line width.
-    * `hoverinfo="skip"` so these lines do not pollute hover tooltips.
-
-#### 3.3 Hover behaviour
-
-To avoid the issue where multiple traces on the same x-value produce a combined hover box, the function uses:
-
-```python
-hovermode="closest"
-```
-
-Each point (previous/latest) has its own tooltip, e.g.:
-
-* `"Previous<br>SP: ...<br>Imbalance: ..."`
-* `"Latest<br>SP: ...<br>Imbalance: ..."`
-
-#### 3.4 Titles and saving
-
-Titles use:
-
-* `prev_df["publishTime_cest"].max()` and
-* `new_df["publishTime_cest"].max()`
-
-to show previous vs latest times, and settlement dates where possible. The optional `title_suffix` is used to label the update cycle (e.g. `"Update 1"`, `"Update 2 (Retry)"`), especially in the auto-update loop.
-
-Files are saved as:
-
-* `part1_diff_<YYYY-MM-DD>_<timestamp>.png`
-* `part1_diff_<YYYY-MM-DD>_<timestamp>.html`
-
-under `output_dir`.
-
-### 4. Auto-update loop
-
-**Function:**
-
-```python
-auto_update_loop(
-    date,
-    update_interval_minutes=30,
-    retry=True,
-    retry_increments=(30, 60, 120),
-    output_dir="."
-)
-```
-
-**Purpose:** Monitor a given day’s indicated imbalance forecast and repeatedly visualise updates.
-
-**Behaviour:**
-
-1. **Initial snapshot:**
-
-   * Calls `full_run_and_plot(date, do_plot=True, output_dir=output_dir)` to:
-
-     * fetch data,
-     * compute final per-SP forecast,
-     * plot the base profile.
-   * Reads the latest `publishTime_cest` from the resulting DataFrame.
-
-2. **Expected next update:**
-
-   ```python
-   next_expected = prev_max_publish + timedelta(minutes=update_interval_minutes)
-   ```
-
-3. **Countdown:**
-
-   * Uses a simple `countdown_timer(seconds)` that prints the remaining time to stdout, then checks again at (or shortly after) `next_expected`.
-
-4. **Update check:**
-
-   * Fetches a new snapshot (without plotting).
-   * If `new_max_publish > prev_max_publish`:
-
-     * Calls `plot_diff(prev_df, new_df, order_str, title_suffix=f"Update {cycle}", output_dir=output_dir)`.
-     * Replaces `prev_df` and `prev_max_publish` with the new values.
-
-5. **Retries (optional, but highly reccomended):**
-
-Though data may be uploaded by the provider precisely on time, updates of the database from which the public api is queryed often encounters a delay. In my personal testing there is an average of 60-180 second delay between the `publish_date` and the actual time the data is available 
-   * If no new data is found and `retry=True`:
-
-     * Loops over `retry_increments` (e.g. 30s, 60s, 120s).
-     * After each wait, fetches again and checks if a new publish appears.
-   * If still no new data, reports and waits for the next main interval.
-
-This gives a simple way to watch the forecast evolve over the day, with each update visualised against the previous one.
-
-### 5. Task 1 – CLI usage
-
-Example commands:
+Flags shared by both:
+
+| Flag | Meaning |
+|---|---|
+| `--date` | Settlement date `D` (YYYY-MM-DD). The local day is SP 47–48 from `D-1` plus SP 1–46 from `D`. |
+| `-o`, `--output-dir` | Where to save plots (default: current directory). |
+| `--parquet-dir` | Also write the normalised data as Parquet under this directory. |
+| `--timezone` | Local zone for the day view (default `Europe/Berlin`). |
+| `--no-show` | Do not open the figures in a browser. |
+| `--quiet` | Only report warnings and errors. |
+
+Task 1 additionally takes `--update-interval-minutes`, `--retry-increments`,
+`--no-retry`, and `--no-auto-update` (plot the latest data once and exit).
+Task 2 additionally takes `--x-axis` and `--no-plots`.
+
+Running the modules directly works too, and is the same thing without the
+default date:
 
 ```bash
-# Basic run for a single day (UTC settlement date)
-python task1.py --date 2025-11-11
-
-# Run with a custom output directory for plots
-python task1.py --date 2025-11-11 --output-dir plots/task1
-
-# Run auto-update loop with different intervals
-python task1.py --date 2025-11-11 --update-interval-minutes 20
+python -m cli.imbalance --date 2025-12-07 --no-auto-update -o out_task1
 ```
 
-Typical arguments:
+### Setup
 
-* `--date YYYY-MM-DD`
-  Settlement date (UTC) for which to build the local-day imbalance view.
-
-* `--update-interval-minutes N`
-  Approximate time between forecast updates (default 30).
-
-* `--no-retry` or similar flag
-  Disable the short retry sequence if there is no new data at the expected time.
-
-* `-o, --output-dir PATH`
-  Directory to save PNG/HTML plots (created if it does not exist).
+```bash
+python3 -m venv mvenv && ./mvenv/bin/pip install -r requirements.txt
+```
 
 ---
 
-## Task 2 – Wind & Solar: Forecast vs Actuals
+## How it is put together
 
-### 1. Data handling and processing
+The centre of the design is not the plots, it is a **single normalised frame
+schema** that every source produces and every consumer reads. Get one row of
+data into that shape and it can be transformed, plotted, and written to Parquet
+without anything downstream knowing which API it came from.
 
-**Goal:** for a given local day in Europe/Berlin, compare **day-ahead forecast** vs **actual/estimated generation** for **wind** and **solar**, aligned by settlement period and fuel type.
-
-### 1.1 Local day construction
-
-Same local-day logic as Task 1:
-
-* For settlementDate `D` (UTC):
-
-  * **SP 47–48 from `D-1`**
-  * **SP 1–46 from `D`**
-* These are concatenated into a single local-day DataFrame for each of:
-
-  * forecast (wind & solar),
-  * actuals (wind & solar).
-
-The functions:
-
-```python
-fetch_wind_solar_forecast(date, query_attempt_count=5)
-fetch_wind_solar_actuals(date, query_attempt_count=5)
+```
+                       ┌──────────────┐
+   BMRS  ──▶ sources ──▶│  normalised  │──▶ domain ──▶ viz ──▶ png / html
+  (ENTSOE later)        │    frame     │──▶ store  ──▶ parquet
+                        └──────────────┘
+                         energyviz.schema
 ```
 
-wrap the relevant BMRS endpoints in retry loops:
+| Module | Responsibility |
+|---|---|
+| `energyviz/config.py` | `Settings` – base URL, timezone, retry policy, timeout. Constructed once at the CLI boundary and passed down. |
+| `energyviz/schema.py` | **The contract.** Column names, dtypes, vocabulary, `conform`, `validate`, `select`. |
+| `energyviz/transport.py` | The one HTTP retry loop. Sleep is injected, so tests do not wait. |
+| `energyviz/sources/elexon.py` | Endpoint table, BMRS payloads → normalised frames. |
+| `energyviz/domain/settlement.py` | The 47, 48, 1–46 local-day rule; period ordering; UTC → local. |
+| `energyviz/domain/imbalance.py` | Latest forecast per period, sign labelling, snapshot diffing. |
+| `energyviz/domain/windsolar.py` | Forecast/actual alignment and error statistics. |
+| `energyviz/viz/theme.py` | The FT-style palette, as a frozen dataclass rather than module globals. |
+| `energyviz/viz/figures.py` | Frame → `plotly.Figure`. Pure: no I/O, no `.show()`. |
+| `energyviz/viz/export.py` | The only module that writes plot files. |
+| `energyviz/store/parquet.py` | Normalised frame ↔ Parquet tree. |
+| `energyviz/watch.py` | Poll a feed until it publishes something new. Clock injected. |
+| `cli/` | Argument parsing and wiring. No logic. |
 
-* Forecast:
-  `https://data.elexon.co.uk/bmrs/api/v1/forecast/generation/wind-and-solar/day-ahead`
-* Actuals:
-  `https://data.elexon.co.uk/bmrs/api/v1/generation/actual/per-type/wind-and-solar`
+Three rules hold throughout, and they are what make the rest work:
 
-Parsing is handled by:
+1. **Nothing below `cli/` prints, writes, or reads the clock on its own.** Those
+   are passed in. `viz/export.py` writes because writing is its whole job.
+2. **Errors are raised, not printed.** `FetchError` and `SchemaError` travel up
+   to `cli/`, which decides what to do about them.
+3. **Data is carried in frozen dataclasses**, not dicts – `Settings`,
+   `RetryPolicy`, `Theme`, `Endpoint`, `WatchPolicy`, `ErrorSummary`.
 
-```python
-forecast_req_to_df(r)
-actuals_req_to_df(r)
+### The normalised frame
+
+```
+source             str        "elexon"
+dataset            str        "imbalance_forecast" | "generation_forecast" | "generation_actual" | "day_ahead_price"
+zone               str        "GB", "PL", ...
+settlement_date    str        the date the upstream API files the row under
+settlement_period  Int64      1..48; NA for sources that have no periods
+start_utc          ts[UTC]    start of the delivery interval
+start_local        ts[tz]     the same instant in Settings.timezone
+publish_utc        ts[UTC]    when upstream published it; NA where not reported
+series             str        "imbalance" | "generation" | "demand" | "margin" | "wind" | "solar" | "price"
+value              float64
+unit               str        "MW" | "EUR/MWh"
 ```
 
-which simply call `response.json()["data"]` into DataFrames.
+It is a long-format **observation log**, not a deduplicated cube: one row per
+observation the API actually reported. Wind arrives split into onshore and
+offshore, and an evolving forecast arrives once per publish time, so a single
+`(dataset, date, period, series)` may appear several times. Collapsing that is
+`domain`'s job, not the fetcher's.
 
-### 1.2 Fuel identification and MW values
+`settlement_period` is nullable on purpose. It is what lets an hourly source
+that has no concept of settlement periods into the same schema without changing
+it.
 
-**Fuel mapping:**
+---
+
+## Extending it
+
+### A second data source
+
+Write one module and add one line. The rest of the package does not change.
 
 ```python
-add_fuel_column(df)
+# energyviz/sources/entsoe.py
+source_name = "entsoe"
+
+endpoints = {
+    "day_ahead_prices": Endpoint("/api", schema.day_ahead_price, unit="EUR/MWh"),
+}
+
+class EntsoeClient:
+    def __init__(self, http, settings):
+        ...
+
+    def fetch_day_ahead_prices(self, zone, start, end):
+        payload = self.http.get_json(url, params, label=...)
+        return schema.conform(...)     # ← the only contract to meet
 ```
 
-* Uses `psrType`:
-
-  * `"Wind"` if the string contains `"wind"`,
-  * `"Solar"` if the string contains `"solar"`,
-  * drops everything else.
-
-**MW values:**
-
-* Forecast: `forecast_MW = quantity`
-* Actuals:  `actual_MW   = quantity`
-
-### 1.3 Aggregation and merge
-
 ```python
-prepare_wind_solar_merged(forecast_df, actuals_df)
+# energyviz/sources/__init__.py
+builders = {
+    elexon.source_name: elexon.ElexonClient,
+    entsoe.source_name: entsoe.EntsoeClient,     # ← the one line
+}
 ```
 
-* Applies `convert_col_to_cest(..., col_names=("startTime",))` to both datasets.
+ENTSOE is hourly, so its rows carry `settlement_period = NA` and join on
+`start_utc`. Its vocabulary (`day_ahead_price`, `price`, `"EUR/MWh"`) is already
+in `schema.py`, and every existing transform and Parquet path works on it
+unchanged.
 
-* Ensures `settlementPeriod` is an integer.
+That claim is checked rather than asserted. `tests/test_second_source.py`
+implements an ENTSOE day-ahead price source against a real A44 payload — XML
+rather than JSON, hourly rather than half-hourly, priced in EUR/MWh rather than
+measured in MW, with no settlement periods at all — and runs it through the same
+schema, registry, and store as Elexon. If a change here makes a second source
+harder to add, that test fails.
 
-* Defines grouping columns:
+### A second theme
 
-  ```python
-  group_cols = ["settlementDate", "settlementPeriod", "fuel"]
-  ```
-
-* Forecast:
-
-  ```python
-  forecast_agg = forecast_df.groupby(group_cols, as_index=False).agg({
-      "forecast_MW": "sum",
-      "startTime_cest": "min",
-  })
-  ```
-
-* Actuals similarly aggregated for `actual_MW`.
-
-* Merges forecast and actuals on `group_cols` (`how="inner"`).
-
-* Chooses `startTime_cest` using `combine_first`.
-
-* Calculates `diff_MW = actual_MW - forecast_MW`.
-
-* Sorts the result by `settlementDate`, `fuel`, `settlementPeriod`.
-
-**Splitting by fuel:**
+The palette is a value, so no plot function needs editing:
 
 ```python
-df_wind, df_solar = split_wind_solar(merged_df)
-```
+from energyviz.viz import figures, theme
 
-* Returns separate DataFrames for wind and solar, with settlement periods as integers.
-
-### 2. Visualisation – forecast vs actuals (per fuel)
-
-**Function:**
-
-```python
-plot_forecast_vs_actual_with_table(
-    df,
-    fuel_label="Wind",
-    x_axis="settlementPeriod",
-    output_dir="."
+midnight = theme.Theme(
+    paper_bg="#12161c", plot_bg="#12161c",
+    grid="#232a33", axis="#4a5866", tick="#c8d2dc",
+    green="#4ade80", red="#f87171",
+    font_family="Inter, system-ui, sans-serif",
 )
+
+figures.imbalance_snapshot(snapshot, "Europe/Berlin", theme=midnight).show()
 ```
 
-**Purpose:** For each of wind and solar:
-
-* Show forecast vs actual generation for the local day.
-* Provide a small numeric table underneath the chart.
-
-#### 2.1 X-axis options
-
-* Default: `x_axis="settlementPeriod"`:
-
-  * Uses the `[47, 48, 1..46]` ordering via `settlement_period_order()`.
-  * Adds a sort key column so the DataFrame and table follow that order.
-
-* Alternative: `x_axis="startTime_cest"`:
-
-  * Uses actual local timestamps on the x-axis.
-  * Sorted by `startTime_cest`.
-
-#### 2.2 Subplot layout
-
-Two-row `make_subplots` layout:
-
-* **Row 1:** line+marker plot:
-
-  * Forecast vs actual generation (MW).
-  * Forecast: solid line, markers.
-  * Actual: dotted line, markers.
-
-* **Row 2:** table displaying:
-
-  * Settlement period.
-  * Forecast (MW).
-  * Actual (MW).
-  * Difference = actual – forecast (MW).
-
-Only one DataFrame (wind or solar) is passed at a time, so each figure is dedicated to a single fuel.
-
-#### 2.3 Visual style
-
-* The theme is **FT-style by default** (same palette as Task 1):
-
-  * Warm background (`paper_bg`, `plot_bg`).
-  * Serif font.
-  * `ft_red` for forecast, `ft_green` for actual on the top plot.
-  * Table header uses the same axis colour, with body cells matching the background.
-
-There is no style toggle in the current code; all Task 2 plots use this palette.
-
-#### 2.4 Saving
-
-For a local date `DD Mon YYYY`, files are saved under `output_dir` as:
-
-* `forecast_vs_actual_wind_<DD_Mmm_YYYY>.png`
-* `forecast_vs_actual_wind_<DD_Mmm_YYYY>.html`
-
-and equivalently for solar.
-
-### 3. Error summary and system commentary
-
-**Function:**
-
-```python
-print_forecast_error_summary(df, fuel_label="Wind")
-```
-
-For each fuel, it prints:
-
-* Mean error `E[actual - forecast]` (signed).
-* Mean absolute error (MAE).
-* Maximum under-forecast (most negative `diff_MW`).
-* Maximum over-forecast (most positive `diff_MW`).
-
-Example format:
-
-```text
-Wind mean error (actual - forecast):  -85.3 MW
-Wind mean absolute error:            210.4 MW
-Wind max under-forecast:             -640.0 MW
-Wind max over-forecast:               390.2 MW
-```
-
-These numbers support a short qualitative commentary, for example:
-
-* **Under-forecast periods** (actual > forecast):
-
-  * System receives more wind/solar than expected.
-  * Tends to increase downward balancing actions (curtailment, reducing other generation).
-  * Can depress imbalance prices if the surplus is significant.
-
-* **Over-forecast periods** (actual < forecast):
-
-  * System sees less wind/solar than planned.
-  * Requires upward balancing (ramping conventional generation, imports, reserve).
-  * Puts upward pressure on imbalance prices and reduces system margin.
-
-The combination of the plots and these statistics makes it easy to see not just that “the forecast was wrong”, but **when** and **in which direction** the system was exposed.
-
-### 4. Task 2 – CLI usage
-
-Typical usage patterns:
+### Parquet
 
 ```bash
-# Basic run for a local day based on settlementDate D
-python task2.py --date 2025-11-11
-
-# Save outputs into a custom folder
-python task2.py --date 2025-11-11 --output-dir plots/task2
-
-# Use local time on the x-axis instead of settlementPeriod
-python task2.py --date 2025-11-11 --x-axis startTime_cest
+python task2.py --date 2025-11-11 --parquet-dir data --no-plots
 ```
 
-Common arguments:
+```
+data/generation_forecast/GB/2025-11-11.parquet
+data/generation_actual/GB/2025-11-11.parquet
+```
 
-* `--date YYYY-MM-DD`
-  Settlement date (UTC). The script automatically pulls SP 47–48 from the previous day and SP 1–46 from this date to form the local day.
+One file per dataset, zone and settlement date, so re-fetching a day is a single
+overwrite and a whole dataset is readable by globbing. Because the *schema* is
+the contract rather than the pandas code, a reader in another language reads the
+same columns with the same meanings – which is the intended path for moving the
+fetch and store layers to Go later.
 
-* `--x-axis {settlementPeriod,startTime_cest}`
-  Choose between settlement period index and local time on the x-axis.
+---
 
-* `--no-plots`
-  Skip plotting and only perform data processing and print error summaries.
+## Testing
 
-* `-o, --output-dir PATH`
-  Directory for PNG/HTML output (created when missing).
+```bash
+./mvenv/bin/python -m pytest tests -q
+```
 
-All of the underlying functions (fetch, processing, plotting) can also be called directly from a jupyter notebook for more interactive exploration.
+65 tests, no network: `tests/fixtures/` holds recorded BMRS payloads and
+`tests/support.py` serves them in place of `HttpClient`. The retry loop, the
+poll loop, and the figure builders are all exercised without a socket, a wait,
+or a browser.
+
+`tests/golden/` holds the output of the **pre-refactor** `task1.py` and
+`task2.py` over those same payloads, and `tests/test_golden.py` pins the current
+code to it. The refactor reproduces the old numbers exactly – 48 imbalance rows,
+48 wind and 48 solar rows, and the same error statistics.
+
+To re-record the fixtures against live BMRS, delete `tests/fixtures/*.json` and
+re-run the recorder described at the top of `tests/support.py`.
+
+---
+
+## Notes on the refactor
+
+Behaviour is preserved, with four exceptions – all of them defects in the
+original:
+
+- **The snapshot filename used the wrong date.** `part1_imbalance_*` took its
+  date from the first row of the frame, which is SP 47 and therefore belongs to
+  `D-1`. Running `--date 2025-12-07` wrote `part1_imbalance_2025-12-06.png`. It
+  now uses the date you asked for.
+- **The PNG was written twice.** The first write had no dimensions and was
+  immediately overwritten by a second at 1600×900. Now written once.
+- **`plot_diff` dropped `--output-dir` on one path.** The first-attempt call
+  omitted it, so a revision found on the first check was written to the working
+  directory instead of the chosen one. Both paths now pass it.
+- **`--no-auto-update` was documented but never implemented.** It exists now.
+
+One quirk was kept deliberately: because a local day spans two settlement dates,
+the diff plot always matches snapshots on settlement period alone rather than on
+`(date, period)`. That is the correct behaviour here, and it is what the original
+did too.
+
+`convert_col_to_cest`, the settlement-period ordering, the FT palette, the save
+block and the retry loop each existed in two or three copies across `task1.py`,
+`task2.py` and the notebook. Each now exists once. `normalise_mw_column` was
+dead and is gone.
